@@ -12,7 +12,15 @@ Send a text prompt to **the real Spotify DJ X** from Spotify desktop. Describe t
 2. Select **Extensions** and search for **TalkToDJX**.
 3. Click **Install**, then reload Spotify when prompted.
 
-New listings can take time to appear in Marketplace's GitHub search results. If the extension is not visible yet, use the manual installer below.
+### If it is missing in Marketplace 1.0.11
+
+Marketplace **1.0.11** searches only the extension cards it has already loaded. Its sorting options, including **Newest**, do not change which repositories it fetches from GitHub, so a valid new listing can be missing from the initial results.
+
+1. Select **Extensions** and clear the search box.
+2. Scroll to the bottom and click **» Load more**. Wait for the next batch, then repeat to load additional extension pages.
+3. Search for **TalkToDJX** after loading the additional pages.
+
+If loading stalls or the listing is still missing, use the standalone-file installation below. Marketplace 1.0.11 can also stop loading when its temporary repository cache fills up or GitHub limits its API requests. The standalone extension does not depend on Marketplace discovery.
 
 DJ requests require Spotify Premium and an account/region where Spotify has enabled this feature. Installing the extension does not enable DJ for unsupported accounts.
 
@@ -42,7 +50,24 @@ No API key, separate account login, AI subscription, or background server is nee
 
 ## Manual install / update
 
-Download and extract this repository using **Code → Download ZIP** on GitHub, or clone it. Open a terminal in the extracted folder and run, with Node.js installed:
+### Standalone file — no Node.js required
+
+1. Download [`talk-to-dj.js` from the v1.3.2 release](https://github.com/NotMurPh/SpicetifyTalkToDJX/releases/download/v1.3.2/talk-to-dj.js).
+2. Run `spicetify -c` in a terminal to locate your Spicetify configuration file.
+3. Open the folder containing that configuration file, then its `Extensions` folder. Create `Extensions` if it does not exist.
+4. Place the downloaded file there, keeping its name **`talk-to-dj.js`**.
+5. Run:
+
+```powershell
+spicetify config extensions talk-to-dj.js
+spicetify apply
+```
+
+Spotify restarts with TalkToDJX enabled. To update, replace the same file with a newer release and run `spicetify apply` again.
+
+### Node.js installer
+
+Download and extract [this repository](https://github.com/NotMurPh/SpicetifyTalkToDJX) using **Code → Download ZIP** on GitHub, or clone it. Open a terminal in the extracted folder and run, with Node.js installed:
 
 ```powershell
 node install.mjs
@@ -62,11 +87,20 @@ node install.mjs --no-restart
 
 Uninstall:
 
-For a Marketplace installation, use **Marketplace → Installed → TalkToDJX → Remove** and reload Spotify. For a manual installation:
+For a Marketplace installation, use **Marketplace → Installed → TalkToDJX → Remove** and reload Spotify. For a Node.js installer installation:
 
 ```powershell
 node install.mjs --uninstall
 ```
+
+For a standalone-file installation:
+
+```powershell
+spicetify config extensions talk-to-dj.js-
+spicetify apply
+```
+
+You can then remove `talk-to-dj.js` from the `Extensions` folder.
 
 If a Spotify update removes Spicetify, restore Spicetify first, then run the installer again.
 
