@@ -1,0 +1,9 @@
+{
+  "name": "TalkToDJX",
+  "description": "Send text requests to the real Spotify DJ X from desktop. Spotify picks the music and provides DJ narration. No API key needed.",
+  "preview": "preview.svg",
+  "main": "talk-to-dj.js",
+  "readme": "README.md",
+  "branch": "main",
+  "tags": ["dj", "requests", "playback"]
+}

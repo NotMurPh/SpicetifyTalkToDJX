@@ -1,0 +1,59 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="675" viewBox="0 0 1200 675" role="img" aria-labelledby="title description">
+  <title id="title">TalkToDJX — Text requests for the real Spotify DJ</title>
+  <desc id="description">TalkToDJX artwork showing a dark request panel with a music prompt, four suggestions, Send, and Hand it to DJ X buttons.</desc>
+  <defs>
+    <linearGradient id="background" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#102a25"/>
+      <stop offset="0.6" stop-color="#0c1614"/>
+      <stop offset="1" stop-color="#111111"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#1ed760"/>
+      <stop offset="1" stop-color="#1ed7bc"/>
+    </linearGradient>
+    <filter id="shadow" x="-25%" y="-25%" width="150%" height="160%">
+      <feDropShadow dx="0" dy="20" stdDeviation="26" flood-color="#000000" flood-opacity="0.5"/>
+    </filter>
+  </defs>
+  <rect width="1200" height="675" rx="24" fill="url(#background)"/>
+  <circle cx="1040" cy="80" r="290" fill="#1ed760" opacity="0.035"/>
+  <circle cx="1130" cy="600" r="310" fill="#1ed7bc" opacity="0.03"/>
+  <g font-family="Segoe UI, Arial, sans-serif">
+    <rect x="64" y="116" width="76" height="76" rx="22" fill="url(#accent)"/>
+    <path d="M83 148v12m10-25v38m10-46v54m10-40v26m10-20v14" fill="none" stroke="#092219" stroke-width="5" stroke-linecap="round"/>
+    <text x="64" y="266" fill="#ffffff" font-size="58" font-weight="700" letter-spacing="-2">TalkToDJX</text>
+    <text x="66" y="320" fill="#e7f1ec" font-size="27" font-weight="600">Your mood. Your music.</text>
+    <text x="66" y="364" fill="#aebdb5" font-size="24">The real Spotify DJ.</text>
+    <text x="66" y="427" fill="#aebdb5" font-size="18">Describe what you want to hear.</text>
+    <text x="66" y="457" fill="#aebdb5" font-size="18">DJ X picks the tracks and narrates.</text>
+    <rect x="66" y="497" width="148" height="36" rx="18" fill="#1ed760" fill-opacity="0.1" stroke="#1ed760" stroke-opacity="0.25"/>
+    <text x="140" y="520" text-anchor="middle" fill="#67e897" font-size="14" font-weight="600">No API key needed</text>
+    <rect x="226" y="497" width="178" height="36" rx="18" fill="#ffffff" fill-opacity="0.04" stroke="#ffffff" stroke-opacity="0.1"/>
+    <text x="315" y="520" text-anchor="middle" fill="#c5d0cb" font-size="14">Spicetify extension</text>
+    <rect x="530" y="105" width="606" height="454" rx="20" fill="#181818" stroke="#ffffff" stroke-opacity="0.08" filter="url(#shadow)"/>
+    <text x="562" y="151" fill="#b3b3b3" font-size="17">TalkToDJX</text>
+    <path d="M1090 134l12 12m0-12-12 12" stroke="#b3b3b3" stroke-width="2" stroke-linecap="round"/>
+    <text x="562" y="206" fill="#ffffff" font-size="32" font-weight="700" letter-spacing="-0.7">Tell ’em what you want:</text>
+    <rect x="562" y="232" width="542" height="158" rx="14" fill="#242424"/>
+    <text x="584" y="271" fill="#e7e7e7" font-size="21">Play some mellow jazz for</text>
+    <text x="584" y="305" fill="#e7e7e7" font-size="21">a relaxed evening.</text>
+    <g fill="#262626" stroke="#ffffff" stroke-opacity="0.06">
+      <rect x="562" y="405" width="150" height="34" rx="17"/>
+      <rect x="720" y="405" width="104" height="34" rx="17"/>
+      <rect x="832" y="405" width="130" height="34" rx="17"/>
+      <rect x="970" y="405" width="134" height="34" rx="17"/>
+    </g>
+    <g fill="#e7e7e7" font-size="13" text-anchor="middle">
+      <text x="637" y="427">Something mellow</text>
+      <text x="772" y="427">More energy</text>
+      <text x="897" y="427">Something new</text>
+      <text x="1037" y="427">A little nostalgia</text>
+    </g>
+    <rect x="562" y="462" width="264" height="56" rx="28" fill="#1ed760" stroke="#45e780"/>
+    <text x="694" y="497" text-anchor="middle" fill="#000000" font-size="19" font-weight="700">Send</text>
+    <rect x="840" y="462" width="264" height="56" rx="28" fill="none" stroke="#ffffff" stroke-opacity="0.4"/>
+    <text x="972" y="497" text-anchor="middle" fill="#ffffff" font-size="17" font-weight="600">Hand it to DJ X</text>
+    <text x="66" y="616" fill="#69877a" font-size="14" letter-spacing="1.5">TEXT REQUESTS · SPOTIFY DESKTOP · DJ NARRATION</text>
+    <text x="1136" y="616" text-anchor="end" fill="#69877a" font-size="14">Ctrl + Alt + D</text>
+  </g>
+</svg>

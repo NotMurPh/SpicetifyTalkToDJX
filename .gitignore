@@ -1,0 +1,22 @@
+# Local dependencies and generated output
+node_modules/
+coverage/
+*.log
+
+# Local credentials and configuration
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Editor and operating system files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Local Spotify captures and configuration backups
+*-narration.png
+*-music.png
+*.talk-to-dj-backup
