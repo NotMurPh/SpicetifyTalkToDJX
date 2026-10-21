@@ -1,11 +1,11 @@
 // NAME: TalkToDJX
 // DESCRIPTION: Send text requests to the real Spotify DJ from desktop.
-// VERSION: 1.3.2
+// VERSION: 1.3.3
 // No API key, external AI service, or background server required.
 (function talkToDJ() {
   "use strict";
 
-  const VERSION = "1.3.2";
+  const VERSION = "1.3.3";
   const DJ_URI = "spotify:playlist:37i9dQZF1EYkqdzj48dyYq";
   const DJ_IDS = new Set([
     "37i9dQZF1EYkqdzj48dyYq", "37i9dQZF1EYkqdzj8OSOas", "37i9dQZF1EYkqdzjdvy3mw",
@@ -14,8 +14,6 @@
   const ENDPOINT = "/dj-interaction-manager/spotify.dj.interactionmanager.v0.DJInteractionManagerService/ResolveInteractiveContext";
   const MAX_PROMPT = 500;
   const ICON = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M5 10v4m4-8v12m4-15v18m4-13v8m4-6v4" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/></svg>';
-  const DJ_ICON = '<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M7.813 14.497A6.5 6.5 0 0 1 1.5 8.016c.008-3.553 2.71-5.744 5.043-6.078.85-.121 1.288.037 1.564.246.312.238.553.639.822 1.276q.115.277.239.602c.451 1.167 1.05 2.717 2.505 3.81 1.01.76 1.46 1.529 1.592 2.209.13.679-.037 1.375-.468 2.03-.88 1.34-2.793 2.388-4.844 2.388zm-.037 1.5A8 8 0 1 0 0 8.032c0 4.34 3.464 7.87 7.776 7.965m6.666-7.124c-.358-.788-.979-1.532-1.868-2.2-1.082-.813-1.51-1.9-1.967-3.06a31 31 0 0 0-.296-.736 6.3 6.3 0 0 0-.605-1.151 6.53 6.53 0 0 1 4.39 4.01 6.5 6.5 0 0 1 .346 3.137"/></svg>';
-  const NATIVE_DJ_SELECTOR = 'button.Nv04LEC5GMu3msfbzG0z, button.FrqTR9ccUqvGA9UZRf9H, button[data-testid="dj-button"], button[data-testid="dj-jump-button"]';
 
   class DJError extends Error {
     constructor(message, code = "request_failed") {
@@ -147,6 +145,9 @@
     const platform = spicetify.Platform;
 
     async function ensureDJ(onProgress) {
+      if (!platform.PlayerAPI?.getState) {
+        throw new DJError("Spotify's playback API is not ready. Reapply Spicetify after updating Spotify.", "api_unavailable");
+      }
       let state = platform.PlayerAPI.getState();
       if (!isDJ(state)) {
         onProgress("Starting Spotify DJ…");
@@ -221,7 +222,7 @@
     const sp = window.Spicetify;
     if (!sp?.Platform?.PlayerAPI?.getState || !sp.Platform.RequestBuilder?.build
       || !sp.Platform.ConnectAPI?.getState || !sp.Platform.PlaylistAPI?.getMetadata
-      || !sp.Topbar?.Button || !sp.PopupModal || !sp.Player || !sp.React) {
+      || !sp.PopupModal || !document.body) {
       setTimeout(boot, 500);
       return;
     }
@@ -274,13 +275,11 @@
       #talk-to-dj-topbar { display: flex; align-items: center; justify-content: center; width: 40px; height: 40px;
         border: 0; border-radius: 50%; color: #1ed7bc; background: #ffffff0d; cursor: pointer; -webkit-app-region: no-drag; }
       #talk-to-dj-topbar:hover { background: #ffffff20; }
-      .ttdj-player-dj-slot { display: block; flex: 0 0 48px; height: 32px; align-self: center; }
-      #talk-to-dj-playbar { display: flex; align-items: center; justify-content: center; width: 32px; height: 32px;
-        padding: 0; margin: 0 8px; border: 0; border-radius: 50%; cursor: pointer; -webkit-app-region: no-drag;
-        color: var(--ttdj-dj-icon, #19e68c); background: var(--ttdj-dj-bg, #0a59b8);
-        outline: 2px solid var(--ttdj-dj-outline, #0a59b8); }
-      #talk-to-dj-playbar svg { display: block; width: 16px; height: 16px; }
-      #talk-to-dj-playbar:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
+      #talk-to-dj-topbar:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
+      /* Keep the player free of DJ shortcuts, including Spotify's native one.
+         Match semantic IDs/icon geometry rather than version-specific CSS hashes. */
+      .main-nowPlayingBar-extraControls button:is([data-testid="dj-button"], [data-testid="dj-jump-button"],
+        :has(svg path[d^="M7.813 14.497"])) { display: none !important; }
       @media (prefers-reduced-motion: reduce) { .ttdj textarea, .ttdj button { transition: none; } }
     `;
     document.head.append(style);
@@ -379,7 +378,7 @@
       modal?.classList.add("talk-to-dj-modal");
       const options = { capture: true, signal: view.dismiss.signal };
       document.addEventListener("click", (event) => {
-        if (root.isConnected && !modal.contains(event.target)) {
+        if (root.isConnected && modal && !modal.contains(event.target)) {
           event.preventDefault();
           event.stopImmediatePropagation();
           close();
@@ -400,116 +399,40 @@
       setTimeout(() => { if (root.isConnected) root.querySelector("textarea").focus(); }, 50);
     }
 
-    const topbar = new sp.Topbar.Button("TalkToDJX (Ctrl + Alt + D)", ICON, open);
+    let topbar;
+    if (sp.Topbar?.Button) {
+      try { topbar = new sp.Topbar.Button("TalkToDJX (Ctrl + Alt + D)", ICON, open); }
+      catch { /* Use the DOM fallback if Spicetify's mount point changed. */ }
+    }
+    if (!topbar) {
+      const element = document.createElement("div");
+      const button = document.createElement("button");
+      button.type = "button";
+      button.title = "TalkToDJX (Ctrl + Alt + D)";
+      button.setAttribute("aria-label", "TalkToDJX (Ctrl + Alt + D)");
+      button.innerHTML = ICON;
+      button.addEventListener("click", open);
+      element.append(button);
+      topbar = { element, button };
+    }
     topbar.element.id = "ttdj-topbar-container";
     topbar.button.id = "talk-to-dj-topbar";
     topbar.button.setAttribute("aria-haspopup", "dialog");
-    // Menu's JSX renderer is exposed later than PlayerAPI on some desktop builds.
-    function registerMenu(attempts = 40) {
-      if (!sp.Menu?.Item || !sp.ReactJSX?.jsx) {
-        if (attempts > 0) setTimeout(() => registerMenu(attempts - 1), 500);
-        return;
-      }
-      try { new sp.Menu.Item("TalkToDJX", false, open, ICON).register(); }
-      catch { console.info("[TalkToDJX] Profile menu unavailable; use the waveform button or shortcut."); }
-    }
-    setTimeout(registerMenu, 1000);
-    const playerSlot = document.createElement("span");
-    playerSlot.className = "ttdj-player-dj-slot";
-    const playbar = document.createElement("button");
-    playbar.id = "talk-to-dj-playbar";
-    playbar.type = "button";
-    playbar.setAttribute("aria-label", "Request music from DJ");
-    playbar.setAttribute("aria-haspopup", "dialog");
-    playbar.title = "Request music from DJ";
-    playbar.innerHTML = DJ_ICON;
-    playbar.addEventListener("click", open);
-    playerSlot.append(playbar);
-    let appearanceSource;
-    let appearanceCSS;
-    const updatePlayback = () => mountButtons();
-    // New Spotify builds removed several class names used by Spicetify's mount points.
-    // Stable test IDs let the existing API buttons survive those layout changes.
-    function mountButtons() {
+    function mountButton() {
       if (!topbar.element.isConnected) {
-        const profile = document.querySelector('[data-testid="user-widget-link"]');
-        profile?.parentElement?.insertBefore(topbar.element, profile);
+        const left = document.querySelector('.main-globalNav-historyButtonsWrapper > div, .main-topBar-topbarContentLeft')
+          || document.getElementById("global-nav-bar")?.firstElementChild;
+        left?.append(topbar.element);
       }
-      const native = findNativeDJButtons();
-      for (const button of native) {
-        button.dataset.ttdjNative = "true";
-        button.setAttribute("aria-label", "Request music from DJ");
-        button.setAttribute("aria-haspopup", "dialog");
-        button.title = "Request music from DJ";
-      }
-      if (native.length) {
-        rememberPlayerAppearance(native[0]);
-        if (playerSlot.isConnected) playerSlot.remove();
-        return;
-      }
-      if (!isDJ(sp.Platform.PlayerAPI.getState())) {
-        if (playerSlot.isConnected) playerSlot.remove();
-        return;
-      }
-      const position = findPlayerControlPosition();
-      if (!position) {
-        if (playerSlot.isConnected) playerSlot.remove();
-        return;
-      }
-      if (playerSlot.parentElement !== position.row || playerSlot.nextElementSibling !== position.before) {
-        position.row.insertBefore(playerSlot, position.before);
-      }
-    }
-    function rememberPlayerAppearance(button) {
-      if (appearanceSource === button && appearanceCSS === button.style.cssText) return;
-      appearanceSource = button;
-      appearanceCSS = button.style.cssText;
-      const style = getComputedStyle(button);
-      playbar.style.setProperty("--ttdj-dj-bg", style.backgroundColor);
-      playbar.style.setProperty("--ttdj-dj-outline", style.outlineStyle === "solid" ? style.outlineColor : style.backgroundColor);
-      const icon = button.querySelector("svg");
-      if (icon) playbar.style.setProperty("--ttdj-dj-icon", getComputedStyle(icon).color);
-    }
-    function findPlayerControlPosition() {
-      const queue = document.querySelector('[data-testid="control-button-queue"]');
-      const volume = document.querySelector('[data-testid="volume-bar"]');
-      if (!queue || !volume) return null;
-      // Queue has its own block wrapper. Mount alongside that wrapper, never inside it.
-      for (let row = queue.parentElement; row && row !== document.body; row = row.parentElement) {
-        const style = getComputedStyle(row);
-        if (!style.display.includes("flex") || style.flexDirection !== "row" || !row.contains(volume)) continue;
-        let before = row.querySelector('[data-testid="lyrics-button"], [data-testid="control-button-lyrics"]') || queue;
-        while (before.parentElement !== row) before = before.parentElement;
-        return { row, before };
-      }
-      return null;
-    }
-    function findNativeDJButtons() {
-      const buttons = new Set(document.querySelectorAll(NATIVE_DJ_SELECTOR));
-      for (const path of document.querySelectorAll('button svg path[d^="M7.813 14.497"]')) {
-        const button = path.closest("button");
-        if (button?.style.background && button !== playbar) buttons.add(button);
-      }
-      return [...buttons];
     }
     let mountScheduled = false;
     new MutationObserver(() => {
       if (mountScheduled) return;
       mountScheduled = true;
       // Spotify suspends animation frames while hidden; transitions still need updating.
-      queueMicrotask(() => { mountScheduled = false; mountButtons(); });
+      queueMicrotask(() => { mountScheduled = false; mountButton(); });
     }).observe(document.body, { childList: true, subtree: true });
-    updatePlayback();
-    sp.Player.addEventListener("songchange", updatePlayback);
-    document.addEventListener("click", (event) => {
-      const button = event.target instanceof Element ? event.target.closest("button") : null;
-      if (!button || !isDJ(sp.Platform.PlayerAPI.getState())) return;
-      if (button.dataset.ttdjNative !== "true" && !findNativeDJButtons().includes(button)) return;
-      event.preventDefault();
-      event.stopImmediatePropagation();
-      button._tippy?.hide();
-      open();
-    }, true);
+    mountButton();
     document.addEventListener("keydown", (event) => {
       if (event.ctrlKey && event.altKey && event.code === "KeyD" && !event.repeat) {
         event.preventDefault();

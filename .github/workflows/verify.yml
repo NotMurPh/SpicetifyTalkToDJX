@@ -1,0 +1,23 @@
+name: Verify extension
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  test:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        node: [22, 24]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      - run: node --check talk-to-dj.js
+      - run: node --check install.mjs
+      - run: node --check tools/repair.mjs
+      - run: node --test tests/talk-to-dj.test.cjs tests/compat.test.mjs tests/repair.test.mjs tests/startup.test.cjs

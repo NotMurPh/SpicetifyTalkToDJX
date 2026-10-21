@@ -46,25 +46,25 @@ try {
     await call("Page.reload", { ignoreCache: true });
     await new Promise((resolve) => setTimeout(resolve, 6500));
   }
-  await evaluate(`(async()=>{const deadline=Date.now()+10000;while(!document.querySelector('[data-ttdj-native="true"],#talk-to-dj-playbar')&&Date.now()<deadline)await new Promise(r=>setTimeout(r,250));})()`);
+  await evaluate(`(async()=>{const deadline=Date.now()+10000;while(!window.TalkToDJX&&Date.now()<deadline)await new Promise(r=>setTimeout(r,250));})()`);
   await evaluate("TalkToDJ.close()");
   const loaded = await evaluate("({loaded:window.TalkToDJ?.version,style:!!document.getElementById('talk-to-dj-style'),button:!!document.getElementById('talk-to-dj-topbar')})");
   console.log("Startup:", JSON.stringify(loaded), "Errors:", JSON.stringify(errors));
   assert.ok(loaded.loaded, "Extension did not initialize");
   assert.ok(loaded.button, "The topbar shortcut is missing");
-  const native = await evaluate(`(() => {
-    const button=document.querySelector('button[data-ttdj-native="true"],#talk-to-dj-playbar');
-    if(!button)return {found:false};
-    const before=Spicetify.Platform.PlayerAPI.getState().sessionId;
+  const shortcut = await evaluate(`(() => {
+    const button=document.getElementById('talk-to-dj-topbar');
     button.click();
-    return {found:true,opensMenu:!!document.querySelector('.ttdj'),sameSession:before===Spicetify.Platform.PlayerAPI.getState().sessionId};
+    return {opensMenu:!!document.querySelector('.ttdj'),count:document.querySelectorAll('#talk-to-dj-topbar').length,
+      topLeft:!!button.closest('.main-globalNav-historyButtonsWrapper,.main-topBar-topbarContentLeft'),
+      noBottomButton:!document.querySelector('#talk-to-dj-playbar,.ttdj-player-dj-slot,[data-ttdj-native="true"]'),
+      nativeHidden:[...document.querySelectorAll('.main-nowPlayingBar-extraControls button')]
+        .filter(b=>b.matches('[data-testid="dj-button"],[data-testid="dj-jump-button"]')||b.querySelector('svg path[d^="M7.813 14.497"]'))
+        .every(b=>getComputedStyle(b).display==='none')};
   })()`);
-  if (native.found) {
-    assert.ok(native.opensMenu && native.sameSession, "Native DJ button did not open the request menu");
-    console.log("Native DJ button:", JSON.stringify(native));
-  } else {
-    await evaluate("TalkToDJ.open()");
-  }
+  assert.ok(shortcut.opensMenu && shortcut.topLeft && shortcut.noBottomButton && shortcut.nativeHidden, "The top-left-only shortcut is broken");
+  assert.equal(shortcut.count, 1);
+  console.log("Top-left shortcut:", JSON.stringify(shortcut));
   const ui = await evaluate(`(() => {
     const root = document.querySelector('.ttdj');
     const input = root.querySelector('textarea');
@@ -184,51 +184,9 @@ try {
     const before = await evaluate("Spicetify.Platform.PlayerAPI.getState().context.metadata['correlation-id']");
     const closed = await evaluate(`(() => { TalkToDJ.open();const input=document.querySelector('.ttdj textarea');input.value=${JSON.stringify(prompt)};input.dispatchEvent(new Event('input',{bubbles:true}));document.querySelector('.ttdj form').requestSubmit();return !document.querySelector('.ttdj');})()`);
     assert.ok(closed, "The panel did not close immediately on Send");
-    if (process.argv.includes("--player-states")) {
-      const phases = {};
-      const deadline = Date.now() + 75000;
-      const screenshotIndex = process.argv.indexOf("--screenshot");
-      const screenshotBase = screenshotIndex === -1 ? null : process.argv[screenshotIndex + 1];
-      while (Date.now() < deadline && (!phases.narration || !phases.music)) {
-        const snapshot = await evaluate(`(() => {
-          const s=Spicetify.Platform.PlayerAPI.getState();
-          const narration=String(s.item?.metadata?.is_narration)==='true'||s.item?.uri?.startsWith('spotify:narration:');
-          const buttons=[...document.querySelectorAll('[data-ttdj-native="true"],button.Nv04LEC5GMu3msfbzG0z,button.FrqTR9ccUqvGA9UZRf9H,#talk-to-dj-playbar')].filter(b=>b.getBoundingClientRect().width>0);
-          const button=buttons[0],queue=document.querySelector('[data-testid="control-button-queue"]');
-          if(!button||!queue)return null;
-          const r=button.getBoundingClientRect(),q=queue.getBoundingClientRect(),style=getComputedStyle(button),icon=button.querySelector('svg');
-          return {phase:narration?'narration':'music',changed:s.context.metadata['correlation-id']!==${JSON.stringify(before)},
-            title:s.item?.metadata?.title,count:buttons.length,fallback:button.id==='talk-to-dj-playbar',
-            horizontal:Math.abs(r.top+r.height/2-q.top-q.height/2)<1&&r.right<=q.left,
-            width:r.width,height:r.height,radius:style.borderRadius,background:style.backgroundColor,
-            outline:style.outlineColor,iconColor:icon?getComputedStyle(icon).color:null,iconPath:icon?.querySelector('path')?.getAttribute('d')};
-        })()`);
-        if (snapshot?.changed && snapshot.count === 1 && (snapshot.phase === "narration" ? snapshot.fallback : phases.narration && !snapshot.fallback) && !phases[snapshot.phase]) {
-          phases[snapshot.phase] = snapshot;
-          if (screenshotBase) {
-            const path = screenshotBase.replace(/\.png$/i, `-${snapshot.phase}.png`);
-            const screenshot = await call("Page.captureScreenshot", { format: "png" });
-            await writeFile(path, Buffer.from(screenshot.data, "base64"));
-          }
-        }
-        await new Promise((resolve) => setTimeout(resolve, 50));
-      }
-      for (const phase of ["narration", "music"]) {
-        assert.ok(phases[phase], `Did not observe DJ ${phase}`);
-        assert.ok(phases[phase].horizontal, `The DJ button stacked during ${phase}`);
-        assert.equal(phases[phase].width, 32);
-        assert.equal(phases[phase].height, 32);
-        assert.equal(phases[phase].radius, "50%");
-      }
-      for (const property of ["background", "outline", "iconColor", "iconPath"]) {
-        assert.equal(phases.narration[property], phases.music[property], `DJ ${property} changed between narration and music`);
-      }
-      assert.ok(phases.narration.fallback, "The narration fallback was not exercised");
-      assert.ok(!phases.music.fallback, "The native music button did not replace the fallback");
-      console.log("DJ player states:", JSON.stringify(Object.fromEntries(Object.entries(phases).map(([phase, sample]) => [phase, { ...sample, iconPath: "matching native DJ icon" }]))));
-    }
     const result = await evaluate(`(async()=>{const deadline=Date.now()+75000;while(TalkToDJ.getStatus().pending&&Date.now()<deadline)await new Promise(r=>setTimeout(r,250));return TalkToDJ.getStatus();})()`);
     console.log("Prompt:", JSON.stringify(result));
+    assert.equal(result.lastError, null, "The live request failed");
     const playback = await evaluate(`(async()=>{const deadline=Date.now()+20000;let s;do{s=Spicetify.Platform.PlayerAPI.getState();if(s.context.metadata['correlation-id']!==${JSON.stringify(before)})break;await new Promise(r=>setTimeout(r,250));}while(Date.now()<deadline);return{title:s.item?.metadata?.title,artist:s.item?.metadata?.artist_name,narration:s.item?.metadata?.['narration.intro.ssml'],changed:s.context.metadata['correlation-id']!==${JSON.stringify(before)}};})()`);
     console.log("Playback:", JSON.stringify(playback));
     assert.ok(playback.changed, "DJ did not change its session after accepting the prompt");

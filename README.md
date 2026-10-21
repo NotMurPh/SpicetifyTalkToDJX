@@ -4,7 +4,7 @@ Send a text prompt to **the real Spotify DJ X** from Spotify desktop. Describe t
 
 ![TalkToDJX request panel preview](preview.svg)
 
-**Spicetify extension · Version 1.3.2 · GitHub repository: SpicetifyTalkToDJX**
+**Spicetify extension · Version 1.3.3 · GitHub repository: SpicetifyTalkToDJX**
 
 ## Install from Spicetify Marketplace
 
@@ -26,15 +26,14 @@ DJ requests require Spotify Premium and an account/region where Spotify has enab
 
 ## Use it
 
-- Click Spotify's **blue DJ button** in the player to open the request panel. It now opens the menu instead of immediately changing the set.
-- You can also use the **waveform button** in Spotify's top bar, or press **Ctrl + Alt + D**.
+- Click the **waveform button at the top left**, or press **Ctrl + Alt + D**.
 - Describe what you want: a mood, an artist, a genre, an activity, or a mix of favorites and discoveries.
 - Click **Send**, or press **Ctrl + Enter**. The panel closes immediately, and DJ handles the request in the background. DJ starts automatically if you are listening to something else.
 - **Hand it to DJ X** closes the panel and lets DJ change the set without a prompt.
 - All four smaller suggestion cards fit in one non-scrollable row directly below the input.
 - **Send** and **Hand it to DJ X** have equal widths and together span the input box's width.
 - Click outside the panel or press **Escape** to close it. An unsent draft stays available until you submit or restart Spotify.
-- The same blue DJ button stays available in the player's horizontal control row during DJ narration and music. You can also open **TalkToDJX** from your profile menu.
+- The top-left waveform is the only TalkToDJX shortcut button. The bottom DJ button is hidden during both narration and music; there is no replacement player button or profile-menu entry.
 
 Example: “Play some mellow jazz for a relaxed evening.”
 
@@ -52,7 +51,7 @@ No API key, separate account login, AI subscription, or background server is nee
 
 ### Standalone file — no Node.js required
 
-1. Download [`talk-to-dj.js` from the v1.3.2 release](https://github.com/NotMurPh/SpicetifyTalkToDJX/releases/download/v1.3.2/talk-to-dj.js).
+1. Download [`talk-to-dj.js` from the v1.3.3 release](https://github.com/NotMurPh/SpicetifyTalkToDJX/releases/download/v1.3.3/talk-to-dj.js).
 2. Run `spicetify -c` in a terminal to locate your Spicetify configuration file.
 3. Open the folder containing that configuration file, then its `Extensions` folder. Create `Extensions` if it does not exist.
 4. Place the downloaded file there, keeping its name **`talk-to-dj.js`**.
@@ -73,7 +72,7 @@ Download and extract [this repository](https://github.com/NotMurPh/SpicetifyTalk
 node install.mjs
 ```
 
-The installer copies `talk-to-dj.js` into your Spicetify `Extensions` folder, adds it to your existing extension list, and runs `spicetify apply`. Spotify restarts.
+The installer copies `talk-to-dj.js` into your Spicetify `Extensions` folder, adds it to your existing extension list, and runs `spicetify apply`. If Spotify's version no longer matches Spicetify's backup, it automatically runs `spicetify backup apply` instead. Spotify restarts. Warnings that exit without applying are treated as failures rather than successful installs.
 
 The extension is a standalone JavaScript file; Node.js is only needed for the installer and development tools. Its filename remains `talk-to-dj.js`, so existing manual installations can be updated in place.
 
@@ -102,7 +101,31 @@ spicetify apply
 
 You can then remove `talk-to-dj.js` from the `Extensions` folder.
 
-If a Spotify update removes Spicetify, restore Spicetify first, then run the installer again.
+### Stay working after Spotify updates (Windows)
+
+With Node.js installed, run once from this repository:
+
+```powershell
+node install.mjs --auto-repair
+```
+
+This registers a per-user Windows task named **TalkToDJX Update Repair**. Every five minutes while you are signed in, it checks Spotify's installed version against Spicetify's backup and checks that the extension is injected. A healthy installation is left idle. When needed, it rebuilds the backup and reapplies your existing Spicetify setup, restarting Spotify if it is running. It does not open Spotify when it is closed.
+
+The helper is copied to `TalkToDJX/repair.mjs` beside your Spicetify configuration, so moving or deleting this repository does not break the task. Node.js and Spicetify must remain installed at their registered paths. Repair results and errors are recorded in `TalkToDJX/repair.log`. Uninstalling through the installer removes the task; it also stays idle if `talk-to-dj.js` is no longer enabled.
+
+Disable the task without uninstalling the extension:
+
+```powershell
+node install.mjs --disable-auto-repair --no-restart
+```
+
+For manual/Marketplace installs without this task, recover after a Spotify update with:
+
+```powershell
+spicetify backup apply
+```
+
+If a future Spotify build is incompatible with Spicetify itself, update Spicetify first (`spicetify upgrade`), then reapply. Automatic repair restores injection; it cannot guarantee compatibility with future changes to Spotify's internal DJ API.
 
 ## How it works
 
@@ -123,12 +146,15 @@ This is an internal Spotify API, so Spotify updates can change it. `TalkToDJX.ge
 ```powershell
 node --check talk-to-dj.js
 node --check install.mjs
-node --test tests/talk-to-dj.test.cjs tests/compat.test.mjs
+node --check tools/repair.mjs
+node --test tests/talk-to-dj.test.cjs tests/compat.test.mjs tests/repair.test.mjs tests/startup.test.cjs
 ```
 
 Live development tools in `tools/` can inspect a local Spotify instance started with `--remote-debugging-port=9222`. They are not required for normal use. `tools/cdp.mjs` evaluates JavaScript in that local instance; do not pass authentication tokens to its output.
 
-Tested locally with Spotify **1.3.3.264 / 1.3.4.258** and Spicetify **2.45.3**. A live prompt returned `OK / success` and DJ X introduced a matching smooth-jazz set.
+The automated checks cover request encoding, delayed replies, recovery from Spotify/backup version mismatches, and startup without React or a working Topbar API. GitHub Actions runs them on Windows and Linux with Node.js 22 and 24. Live checks in `tools/check-live.mjs` verify the top-left-only shortcut and the request panel against a running Spotify instance.
+
+Version 1.3.3 was tested locally with Spotify **1.3.6.1921** and Spicetify **2.46.2**: a real DJ request completed successfully and changed the active DJ set. The scheduled repair task also completed successfully on a healthy installation.
 
 ## Marketplace publishing
 
