@@ -41,6 +41,7 @@ async function evaluate(expression) {
 try {
   await call("Runtime.enable");
   await call("Page.enable");
+  await call("Page.bringToFront");
   errors.length = 0;
   if (!process.argv.includes("--no-reload")) {
     await call("Page.reload", { ignoreCache: true });
@@ -116,26 +117,26 @@ try {
   const outsideCloses = await evaluate(`(() => { const overlay=document.querySelector('.ttdj').closest('.GenericModal__overlay');overlay.dispatchEvent(new MouseEvent('click',{bubbles:true,cancelable:true}));return !document.querySelector('.ttdj'); })()`);
   assert.ok(outsideCloses, "Clicking the backdrop did not close the panel");
 
-  // Delay and reject transport replies to exercise the user's reported timing issue.
+  // Hold native commands without changing playback to exercise background UI behavior.
   const background = await evaluate(`(async()=>{
     const platform=Spicetify.Platform;
-    const originalBuild=platform.RequestBuilder.build;
     const originalSignal=platform.PlayerAPI.sendSignal;
+    const nativePlay=platform.PlayerAPI._playlistPlayServiceClient;
+    const originalPlay=nativePlay?.play;
+    const originalNotification=Spicetify.showNotification;
     const replies=[];
     let requests=0,jumps=0;
-    platform.RequestBuilder.build=function(...args){
-      const builder=originalBuild.apply(this,args);
-      const withPath=builder.withPath,send=builder.send;
-      let path;
-      builder.withPath=function(value){path=value;return withPath.call(this,value);};
-      builder.send=function(...sendArgs){
-        if(!path?.includes('DJInteractionManagerService/ResolveInteractiveContext'))return send.apply(this,sendArgs);
-        requests++;
-        return new Promise((resolve,reject)=>replies.push({resolve,reject}));
-      };
-      return builder;
+    const hold=()=>{requests++;return new Promise((resolve,reject)=>replies.push({resolve,reject}));};
+    platform.PlayerAPI.sendSignal=function(signal,...args){
+      if(signal==='prompt')return hold();
+      if(signal==='jump'){jumps++;return Promise.resolve();}
+      return originalSignal.call(this,signal,...args);
     };
-    platform.PlayerAPI.sendSignal=function(signal,...args){if(signal==='jump'){jumps++;return Promise.resolve();}return originalSignal.call(this,signal,...args);};
+    if(nativePlay)nativePlay.play=function(request,...args){
+      if(request.rawSignal?.identifier==='prompt')return hold();
+      return originalPlay.call(this,request,...args);
+    };
+    Spicetify.showNotification=()=>{}; // Suppress only deliberately injected test failures.
     const until=async(predicate)=>{const deadline=Date.now()+5000;while(!predicate()&&Date.now()<deadline)await new Promise(r=>setTimeout(r,25));};
     try{
       TalkToDJ.open();
@@ -155,25 +156,28 @@ try {
       input.value='A second request while the first reply is delayed';
       input.dispatchEvent(new Event('input',{bubbles:true}));
       reopened.querySelector('form').requestSubmit();
+      const queuedWhilePending=TalkToDJ.getStatus().pending===2&&requests===1;
+      replies[0].reject(new Error('Deliberate test rejection'));
       await until(()=>requests===2);
       const secondSent=requests===2;
-      for(const reply of replies)reply.reject({status:503});
+      for(const reply of replies)reply.reject(new Error('Deliberate test rejection'));
       await until(()=>TalkToDJ.getStatus().pending===0);
       const staysClosedAfterErrors=!document.querySelector('.ttdj');
       TalkToDJ.open();
       document.querySelector('.ttdj-pick').click();
       const handClosesImmediately=!document.querySelector('.ttdj');
       await until(()=>TalkToDJ.getStatus().pending===0);
-      return {closedImmediately,readyWhilePending,secondSent,staysClosedAfterErrors,handClosesImmediately,jumps,requests,settled:TalkToDJ.getStatus().pending===0};
+      return {closedImmediately,readyWhilePending,queuedWhilePending,secondSent,staysClosedAfterErrors,handClosesImmediately,jumps,requests,settled:TalkToDJ.getStatus().pending===0};
     }finally{
-      for(const reply of replies)reply.reject({status:503});
-      platform.RequestBuilder.build=originalBuild;
+      for(const reply of replies)reply.reject(new Error('Deliberate test rejection'));
       platform.PlayerAPI.sendSignal=originalSignal;
+      if(nativePlay)nativePlay.play=originalPlay;
+      Spicetify.showNotification=originalNotification;
       TalkToDJ.close();
     }
   })()`);
   console.log("Dismissal/background requests:", JSON.stringify({ outsideCloses, ...background }));
-  for (const key of ['closedImmediately','readyWhilePending','secondSent','staysClosedAfterErrors','handClosesImmediately','settled']) assert.ok(background[key], key);
+  for (const key of ['closedImmediately','readyWhilePending','queuedWhilePending','secondSent','staysClosedAfterErrors','handClosesImmediately','settled']) assert.ok(background[key], key);
   assert.equal(background.requests, 2);
   assert.equal(background.jumps, 1);
 
@@ -181,15 +185,51 @@ try {
   if (promptIndex !== -1) {
     const prompt = process.argv[promptIndex + 1];
     assert.ok(prompt, "--prompt requires a music request");
-    const before = await evaluate("Spicetify.Platform.PlayerAPI.getState().context.metadata['correlation-id']");
-    const closed = await evaluate(`(() => { TalkToDJ.open();const input=document.querySelector('.ttdj textarea');input.value=${JSON.stringify(prompt)};input.dispatchEvent(new Event('input',{bubbles:true}));document.querySelector('.ttdj form').requestSubmit();return !document.querySelector('.ttdj');})()`);
-    assert.ok(closed, "The panel did not close immediately on Send");
-    const result = await evaluate(`(async()=>{const deadline=Date.now()+75000;while(TalkToDJ.getStatus().pending&&Date.now()<deadline)await new Promise(r=>setTimeout(r,250));return TalkToDJ.getStatus();})()`);
-    console.log("Prompt:", JSON.stringify(result));
-    assert.equal(result.lastError, null, "The live request failed");
-    const playback = await evaluate(`(async()=>{const deadline=Date.now()+20000;let s;do{s=Spicetify.Platform.PlayerAPI.getState();if(s.context.metadata['correlation-id']!==${JSON.stringify(before)})break;await new Promise(r=>setTimeout(r,250));}while(Date.now()<deadline);return{title:s.item?.metadata?.title,artist:s.item?.metadata?.artist_name,narration:s.item?.metadata?.['narration.intro.ssml'],changed:s.context.metadata['correlation-id']!==${JSON.stringify(before)}};})()`);
-    console.log("Playback:", JSON.stringify(playback));
-    assert.ok(playback.changed, "DJ did not change its session after accepting the prompt");
+    const live = await evaluate(`(async()=>{
+      const player=Spicetify.Platform.PlayerAPI;
+      let startedOutsideDJ=false;
+      if(${process.argv.includes("--from-track")}){
+        const state=player.getState(),track=[state.item,...(state.nextItems||[])].find(t=>t?.uri?.startsWith('spotify:track:'));
+        if(!track)throw new Error('No track is available for the DJ startup check');
+        await player.play({uri:track.uri},{featureIdentifier:'talk_to_dj_live_check',referrerIdentifier:'extension'},{});
+        const deadline=Date.now()+10000;
+        while(player.getState().context?.uri!==track.uri&&Date.now()<deadline)await new Promise(r=>setTimeout(r,100));
+        if(player.getState().context?.uri!==track.uri)throw new Error('Could not switch to ordinary track playback');
+        startedOutsideDJ=true;
+      }
+      const before=new Set([player.getState().item,...(player.getState().nextItems||[])].map(t=>t?.metadata?.idj_request_id).filter(Boolean));
+      const snapshots=[];
+      const capture=()=>{
+        const s=player.getState(),m=s.item?.metadata||{},raw=m.auxiliary_media||s.context?.metadata?.auxiliary_media;
+        const aux=raw?new TextDecoder().decode(Uint8Array.from(atob(raw),c=>c.charCodeAt(0))):'';
+        const sample={uri:s.item?.uri,title:s.item?.name,artists:s.item?.artists?.map(a=>a.name),provider:s.item?.provider,
+          requestId:m.idj_request_id,response:s.context?.metadata?.interactivity_response,
+          narration:m['narration.intro.ssml']||aux.match(/<speak[\\s\\S]*?<\\/speak>/)?.[0]};
+        if(JSON.stringify(sample)!==JSON.stringify(snapshots.at(-1)))snapshots.push(sample);
+      };
+      Spicetify.Player.addEventListener('songchange',capture);
+      try{
+        capture();TalkToDJ.open();const input=document.querySelector('.ttdj textarea');input.value=${JSON.stringify(prompt)};
+        input.dispatchEvent(new Event('input',{bubbles:true}));document.querySelector('.ttdj form').requestSubmit();
+        const closedImmediately=!document.querySelector('.ttdj');
+        const deadline=Date.now()+45000;
+        do{
+          await new Promise(r=>setTimeout(r,100));capture();
+          const s=player.getState(),id=s.item?.metadata?.idj_request_id;
+          if(!TalkToDJ.getStatus().pending&&id&&!before.has(id)&&!s.item?.uri?.startsWith('spotify:media:'))break;
+        }while(Date.now()<deadline);
+        const s=player.getState(),id=s.item?.metadata?.idj_request_id;
+        return {closedImmediately,startedOutsideDJ,status:TalkToDJ.getStatus(),snapshots,applied:!!id&&!before.has(id),
+          nativeContext:s.context?.metadata?.agentic_product_type==='idj'&&s.item?.provider==='context'};
+      }finally{Spicetify.Player.removeEventListener('songchange',capture);}
+    })()`);
+    console.log("Native DJ prompt:", JSON.stringify(live));
+    assert.ok(live.closedImmediately, "The panel did not close immediately on Send");
+    assert.equal(live.status.lastError, null, "The live request failed");
+    assert.ok(live.applied && live.nativeContext, "Spotify did not play a fresh native interactive DJ set");
+    assert.ok(live.status.lastRequestId, "The extension did not verify the native request ID");
+    assert.ok(live.snapshots.some(s => s.response === "acknowledge" && s.narration), "Spotify's native spoken acknowledgement was not observed");
+    assert.ok(live.snapshots.some(s => s.requestId === live.status.lastRequestId && s.narration), "The requested set's native DJ introduction was not observed");
   }
 
   const screenshotIndex = process.argv.indexOf("--screenshot");

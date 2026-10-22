@@ -1,17 +1,16 @@
 // NAME: TalkToDJX
 // DESCRIPTION: Send text requests to the real Spotify DJ from desktop.
-// VERSION: 1.3.3
+// VERSION: 1.3.4
 // No API key, external AI service, or background server required.
 (function talkToDJ() {
   "use strict";
 
-  const VERSION = "1.3.3";
+  const VERSION = "1.3.4";
   const DJ_URI = "spotify:playlist:37i9dQZF1EYkqdzj48dyYq";
   const DJ_IDS = new Set([
     "37i9dQZF1EYkqdzj48dyYq", "37i9dQZF1EYkqdzj8OSOas", "37i9dQZF1EYkqdzjdvy3mw",
     "37i9dQZF1EYkqdzjicdiyA", "37i9dQZF1EYkqdzjmSSxKE", "37i9dQZF1EYkqdzjrzxMWI",
   ]);
-  const ENDPOINT = "/dj-interaction-manager/spotify.dj.interactionmanager.v0.DJInteractionManagerService/ResolveInteractiveContext";
   const MAX_PROMPT = 500;
   const ICON = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M5 10v4m4-8v12m4-15v18m4-13v8m4-6v4" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/></svg>';
 
@@ -51,160 +50,99 @@
     return [...encodeVarint(field * 8 + 2), ...encodeVarint(bytes.length), ...bytes];
   }
 
-  // Field numbers and enum values come from Spotify Android's request schema.
-  function encodeRequest(prompt, state, device) {
-    const deviceId = device?.connectStateId || device?.id;
-    if (!deviceId || deviceId === "local_device") {
-      throw new DJError("Spotify is still connecting. Play a song on this computer, then try again.", "missing_device");
-    }
-    if (device.supportsDJNarration === false) {
-      throw new DJError("The active device does not support DJ. Select This computer in Spotify's device picker.", "unsupported_device");
-    }
-    if (!isDJ(state) || !state.sessionId || !state.item?.uri) {
-      throw new DJError("Start Spotify DJ and wait for it to begin playing, then try again.", "missing_session");
-    }
-    if (state.context?.metadata?.["dj.interactivity_enabled"] === "false") {
-      throw new DJError("Spotify has not enabled DJ requests for this account or region.", "unavailable");
-    }
-    return new Uint8Array([
-      ...encodeText(1, normalizePrompt(prompt)),
-      ...encodeText(2, state.sessionId),
-      ...encodeText(3, deviceId),
-      ...encodeText(4, state.item.metadata?.segment || ""),
-      ...encodeText(5, "0"), // No automatic retries: a request changes the DJ session.
-      ...encodeText(7, state.item.uri),
-      64, 2, // input_type = PROMPT_INPUT_TYPE_TEXT; reason defaults to REQUEST_PROMPT.
-    ]);
+  // Spotify Android 9.1.84: PromptSignalPayload.user_prompt = 1, input_type = 2.
+  // The native "prompt" command expects base64 protobuf, not JSON or a bare prompt.
+  function encodePromptSignal(value) {
+    const bytes = [...encodeText(1, normalizePrompt(value)), 16, 2]; // TEXT = 2.
+    return btoa(String.fromCharCode(...bytes));
   }
 
-  function decodeReply(body) {
-    if (body && typeof body === "object" && !(body instanceof ArrayBuffer) && !ArrayBuffer.isView(body)) {
-      return { code: body.statusCode ?? body.status_code, message: body.statusMessage ?? body.status_message ?? "" };
-    }
-    const bytes = body instanceof ArrayBuffer ? new Uint8Array(body)
-      : ArrayBuffer.isView(body) ? new Uint8Array(body.buffer, body.byteOffset, body.byteLength) : null;
-    if (!bytes) throw new DJError("Spotify returned an unreadable DJ response.", "invalid_response");
-    let offset = 0;
-    const readVarint = () => {
-      let value = 0;
-      for (let shift = 0; shift < 35 && offset < bytes.length; shift += 7) {
-        const byte = bytes[offset++];
-        value += (byte & 127) * 2 ** shift;
-        if (!(byte & 128)) return value;
-      }
-      throw new DJError("Spotify returned an incomplete DJ response.", "invalid_response");
-    };
-    const result = { code: "", message: "" };
-    while (offset < bytes.length) {
-      const tag = readVarint();
-      const field = tag >>> 3;
-      const wire = tag & 7;
-      if (!field) throw new DJError("Spotify returned an invalid DJ response.", "invalid_response");
-      if (wire === 2) {
-        const length = readVarint();
-        if (length > bytes.length - offset) throw new DJError("Spotify returned an incomplete DJ response.", "invalid_response");
-        if (field === 1 || field === 2) {
-          result[field === 1 ? "code" : "message"] = new TextDecoder().decode(bytes.subarray(offset, offset + length));
-        }
-        offset += length;
-      } else if (wire === 0) {
-        readVarint();
-      } else if (wire === 1 || wire === 5) {
-        offset += wire === 1 ? 8 : 4;
-        if (offset > bytes.length) throw new DJError("Spotify returned an incomplete DJ response.", "invalid_response");
-      } else {
-        throw new DJError("Spotify returned an unsupported DJ response.", "invalid_response");
-      }
-    }
-    return result;
-  }
-
-  function checkReply(reply) {
-    const code = String(reply.code ?? "").toUpperCase();
-    if (["OK", "SUCCESS", "200"].includes(code)) return reply;
-    if (/RATE|LIMIT|429/.test(code)) throw new DJError("DJ is receiving too many requests. Wait a moment before trying again.", "rate_limited");
-    if (/PERMISSION|FORBIDDEN|UNAVAILABLE|403/.test(code)) {
-      throw new DJError("Spotify has not enabled DJ requests for this account or region.", "unavailable");
-    }
-    throw new DJError(reply.message || "DJ could not complete that request. Try a different music description.", "rejected");
+  function interactiveRequestIds(state) {
+    return new Set([state?.item, ...(state?.nextItems || [])]
+      .map((item) => item?.metadata?.idj_request_id).filter(Boolean));
   }
 
   function readableError(error) {
     if (error instanceof DJError) return error;
-    const status = error?.status ?? error?.statusCode ?? error?.response?.status;
-    if (error?.name === "AbortError" || error?.name === "TimeoutError") {
-      return new DJError("DJ took too long to reply. Check your music before resending; Spotify may still finish your request.", "timeout");
-    }
-    if (status === 401) return new DJError("Your Spotify session expired. Restart Spotify and try again.", "unauthorized");
-    if (status === 403) return new DJError("Spotify has not enabled DJ requests for this account or region.", "unavailable");
-    if (status === 429) return new DJError("Wait a moment before sending DJ another request.", "rate_limited");
-    return new DJError("Could not reach Spotify DJ. Check your connection and try again.", "network");
+    return new DJError("Spotify could not send the DJ command. Check playback and reapply Spicetify if Spotify just updated.", "native_command");
   }
 
   function createClient(spicetify) {
-    const platform = spicetify.Platform;
+    const player = spicetify.Platform.PlayerAPI;
+    const origin = { featureIdentifier: "endless", referrerIdentifier: "extension" };
+    let requests = Promise.resolve();
+    let epoch = 0;
+    const sleep = () => new Promise((resolve) => setTimeout(resolve, 250));
 
-    async function ensureDJ(onProgress) {
-      if (!platform.PlayerAPI?.getState) {
-        throw new DJError("Spotify's playback API is not ready. Reapply Spicetify after updating Spotify.", "api_unavailable");
-      }
-      let state = platform.PlayerAPI.getState();
-      if (!isDJ(state)) {
-        onProgress("Starting Spotify DJ…");
-        const metadata = await platform.PlaylistAPI.getMetadata(DJ_URI);
-        const url = metadata?.formatListData?.attributes?.lexicon_context_url;
-        if (!url) throw new DJError("Spotify DJ is not available for this account. It requires Premium and a supported region.", "unavailable");
-        await platform.PlayerAPI.play({ uri: DJ_URI, url }, { featureIdentifier: "talk_to_dj", referrerIdentifier: "extension" }, {});
-      }
-      const deadline = Date.now() + 20000;
+    async function waitFor(predicate, message, code, ticket = epoch) {
+      const deadline = Date.now() + 30000;
       while (Date.now() < deadline) {
-        state = platform.PlayerAPI.getState();
-        if (isDJ(state) && state.sessionId && state.item?.uri) return state;
-        await new Promise((resolve) => setTimeout(resolve, 250));
+        if (ticket !== epoch) throw new DJError("DJ request cancelled.", "cancelled");
+        const result = predicate(player.getState());
+        if (result) return result;
+        await sleep();
       }
-      throw new DJError("DJ did not start in time. Start DJ from Spotify's Music tab, then send your request again.", "missing_session");
+      throw new DJError(message, code);
+    }
+
+    async function sendPrompt(prompt, ticket) {
+      const parameters = encodePromptSignal(prompt);
+      if (isDJ(player.getState()) && player.canSendSignal("prompt")) {
+        await player.sendSignal("prompt", parameters);
+        return;
+      }
+      // The phone starts DJ with this raw signal when DJ is not active, including
+      // during queued music. Starting ordinary DJ first would lose the prompt.
+      const nativePlay = player._playlistPlayServiceClient;
+      if (typeof nativePlay?.play === "function") {
+        const reply = await nativePlay.play({
+          context: { uri: DJ_URI, url: `context://${DJ_URI}`, isLoading: true },
+          rawSignal: { identifier: "prompt", clientPayload: new TextEncoder().encode(parameters) },
+          playOrigin: origin,
+        });
+        if (reply?.status?.statusCode !== 200) {
+          throw new DJError("Spotify did not accept the DJ request. Check that DJ is available for this account.", "rejected");
+        }
+        return;
+      }
+      // Older Spicetify builds may expose only the public Player API.
+      await player.play({ uri: DJ_URI }, origin, {});
+      await waitFor((state) => isDJ(state) && player.canSendSignal("prompt"),
+        "DJ requests are not ready. Start DJ from Spotify's Music tab and try again.", "missing_session", ticket);
+      await player.sendSignal("prompt", parameters);
     }
 
     async function request(value, onProgress = () => {}) {
       const prompt = normalizePrompt(value);
-      let timer;
-      try {
-        await ensureDJ(onProgress);
-        // Read again after startup so the request never uses a previous session/device.
-        const state = platform.PlayerAPI.getState();
-        const device = platform.ConnectAPI.getState()?.activeDevice;
-        const payload = encodeRequest(prompt, state, device);
+      const ticket = epoch;
+      const run = async () => {
+        if (ticket !== epoch) throw new DJError("DJ request cancelled.", "cancelled");
+        const before = interactiveRequestIds(player.getState());
         onProgress("DJ is picking music for you…");
-        const controller = new AbortController();
-        timer = setTimeout(() => controller.abort(), 60000);
-        const response = await platform.RequestBuilder.build()
-          .withHost("https://spclient.wg.spotify.com")
-          .withPath(ENDPOINT)
-          .withMethod("POST")
-          .withHeaders([
-            { key: "Content-Type", value: "application/x-protobuf" },
-            { key: "Accept", value: "application/x-protobuf" },
-          ])
-          .withBody(payload)
-          .withResponseType("arraybuffer")
-          .withAbortSignal(controller.signal)
-          .withoutMarket()
-          .send();
-        if (response.status < 200 || response.status >= 300) throw { status: response.status };
-        const reply = checkReply(decodeReply(response.body));
-        return { prompt, message: reply.message };
-      } catch (error) {
-        throw readableError(error);
-      } finally {
-        clearTimeout(timer);
-      }
+        await sendPrompt(prompt, ticket);
+        const requestId = await waitFor((state) => {
+          if (!isDJ(state)) return false;
+          return [...interactiveRequestIds(state)].find((id) => !before.has(id));
+        }, "Spotify did not apply your DJ request. Check the music before trying again.", "not_applied", ticket);
+        return { prompt, requestId };
+      };
+      // Match the phone's one-interaction-at-a-time behavior without locking the
+      // panel. A second prompt can be entered while Spotify prepares the first.
+      const result = requests.then(run).catch((error) => { throw readableError(error); });
+      requests = result.catch(() => {});
+      return result;
     }
 
     async function letDJPick() {
+      epoch++;
       try {
-        await ensureDJ(() => {});
-        if (!platform.PlayerAPI.canSendSignal("jump")) throw new DJError("DJ is still loading. Try again in a moment.", "missing_session");
-        await platform.PlayerAPI.sendSignal("jump");
+        if (!isDJ(player.getState())) {
+          await player.play({ uri: DJ_URI }, origin, {});
+          await waitFor((state) => isDJ(state) && player.canSendSignal("jump"),
+            "DJ is still loading. Try again in a moment.", "missing_session");
+        }
+        if (!player.canSendSignal("jump")) throw new DJError("DJ is still loading. Try again in a moment.", "missing_session");
+        await player.sendSignal("jump");
       } catch (error) {
         throw readableError(error);
       }
@@ -214,14 +152,13 @@
 
   // A test seam for the request protocol; this branch never runs inside Spotify.
   if (typeof module !== "undefined" && module.exports) {
-    module.exports = { createClient, encodeRequest, decodeReply, checkReply, normalizePrompt, isDJ, DJError, ENDPOINT };
+    module.exports = { createClient, encodePromptSignal, normalizePrompt, isDJ, DJError };
     return;
   }
 
   function boot() {
     const sp = window.Spicetify;
-    if (!sp?.Platform?.PlayerAPI?.getState || !sp.Platform.RequestBuilder?.build
-      || !sp.Platform.ConnectAPI?.getState || !sp.Platform.PlaylistAPI?.getMetadata
+    if (!sp?.Platform?.PlayerAPI?.getState || !sp.Platform.PlayerAPI.canSendSignal || !sp.Platform.PlayerAPI.sendSignal
       || !sp.PopupModal || !document.body) {
       setTimeout(boot, 500);
       return;
@@ -229,7 +166,7 @@
     if (window.TalkToDJX || window.TalkToDJ) return;
 
     const client = createClient(sp);
-    const state = { draft: "", pending: 0, lastError: null };
+    const state = { draft: "", pending: 0, lastError: null, lastRequestId: null };
     let view;
 
     const style = document.createElement("style");
@@ -303,9 +240,15 @@
     function dispatch(action) {
       state.pending++;
       state.lastError = null;
-      // Playback can change before the HTTP reply finishes. Keep it off the UI.
-      Promise.resolve().then(action).catch((error) => {
-        state.lastError = readableError(error).code;
+      state.lastRequestId = null;
+      // Native DJ preparation stays in the background so the panel stays usable.
+      Promise.resolve().then(action).then((result) => {
+        if (result?.requestId) state.lastRequestId = result.requestId;
+      }).catch((error) => {
+        const failure = readableError(error);
+        if (failure.code === "cancelled") return;
+        state.lastError = failure.code;
+        sp.showNotification?.(failure.message, true);
       }).finally(() => { state.pending--; });
     }
 
@@ -439,7 +382,7 @@
         open();
       }
     });
-    window.TalkToDJX = Object.freeze({ version: VERSION, open, close, getStatus: () => ({ pending: state.pending, lastError: state.lastError }) });
+    window.TalkToDJX = Object.freeze({ version: VERSION, open, close, getStatus: () => ({ pending: state.pending, lastError: state.lastError, lastRequestId: state.lastRequestId }) });
     window.TalkToDJ = window.TalkToDJX; // Keep existing local development tools compatible.
     console.info(`[TalkToDJX] ${VERSION} loaded`);
   }

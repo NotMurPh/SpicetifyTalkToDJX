@@ -1,78 +1,88 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { createClient, encodeRequest, decodeReply, checkReply, normalizePrompt, DJError, ENDPOINT } = require("../talk-to-dj.js");
+const { createClient, encodePromptSignal, normalizePrompt, isDJ } = require("../talk-to-dj.js");
 
-const playing = () => ({
-  sessionId: "session-123",
-  context: { uri: "spotify:playlist:37i9dQZF1EYkqdzj48dyYq", metadata: { "dj.interactivity_enabled": "true" } },
-  item: { uri: "spotify:track:track-123", metadata: { segment: "XX-Segment-42" } },
-});
-const device = { id: "local_device", connectStateId: "real-connect-id", supportsDJNarration: true };
-const OK = Uint8Array.from([10, 2, 79, 75, 18, 7, 115, 117, 99, 99, 101, 115, 115]);
+const DJ_URI = "spotify:playlist:37i9dQZF1EYkqdzj48dyYq";
+function playing(id) {
+  return {
+    sessionId: "native-session",
+    context: { uri: DJ_URI, metadata: { lexicon_set_type: "your_dj" } },
+    item: { uri: "spotify:track:native-track", metadata: id ? { idj_request_id: id } : {} },
+    nextItems: [],
+  };
+}
 
-// Independently read the wire request to check what Spotify actually receives.
-function readFields(bytes) {
+// Independent wire reader: the mobile PromptSignalPayload has only fields 1 and 2.
+function readFields(parameters) {
+  const bytes = Buffer.from(parameters, "base64");
   let offset = 0;
-  const fields = {};
   const integer = () => {
     let value = 0, multiplier = 1;
-    while (offset < bytes.length) {
+    do {
       const byte = bytes[offset++];
       value += (byte % 128) * multiplier;
       if (byte < 128) return value;
       multiplier *= 128;
-    }
-    throw new Error("Truncated fixture");
+    } while (offset < bytes.length);
+    throw new Error("Truncated protobuf");
   };
+  const fields = {};
   while (offset < bytes.length) {
     const tag = integer();
     if (tag % 8 === 0) fields[Math.floor(tag / 8)] = integer();
     else {
       assert.equal(tag % 8, 2);
       const length = integer();
-      fields[Math.floor(tag / 8)] = Buffer.from(bytes.subarray(offset, offset + length)).toString("utf8");
+      fields[Math.floor(tag / 8)] = bytes.subarray(offset, offset + length).toString("utf8");
       offset += length;
     }
   }
   return fields;
 }
 
-function fixture(send = async () => ({ status: 200, body: OK.buffer })) {
+function fixture({ ready = true, nativeStart = true, onCommand } = {}) {
   const calls = [];
   let state = playing();
-  let currentDevice = device;
+  let index = 0;
+  const apply = () => { state = playing(`idj-request-${++index}`); ready = true; };
   const player = {
     getState: () => state,
-    play: async (context) => { calls.push({ play: context }); state = { ...playing(), sessionId: "new-session" }; },
-    canSendSignal: () => true,
-    sendSignal: async (signal) => { calls.push({ signal }); },
+    canSendSignal: (signal) => signal === "prompt" ? ready : true,
+    sendSignal: async (signal, parameters) => {
+      calls.push({ signal, parameters });
+      if (onCommand) await onCommand({ signal, parameters, apply });
+      else if (signal === "prompt") apply();
+    },
+    play: async (...args) => { calls.push({ publicPlay: args }); state = playing(); ready = true; },
   };
-  const builder = () => {
-    const call = {};
-    const chain = {};
-    for (const method of ["withHost", "withPath", "withMethod", "withHeaders", "withBody", "withResponseType", "withAbortSignal", "withoutMarket"]) {
-      chain[method] = (value) => { call[method] = value; return chain; };
-    }
-    chain.send = async () => { calls.push(call); return send(call); };
-    return chain;
+  if (nativeStart) player._playlistPlayServiceClient = {
+    play: async (request) => {
+      calls.push({ nativePlay: request });
+      if (onCommand) await onCommand({ request, apply });
+      else apply();
+      return { status: { statusCode: 200 } };
+    },
   };
-  const client = createClient({ Platform: {
-    PlayerAPI: player,
-    ConnectAPI: { getState: () => ({ activeDevice: currentDevice }) },
-    PlaylistAPI: { getMetadata: async () => ({ formatListData: { attributes: { lexicon_context_url: "hm://dj-session" } } }) },
-    RequestBuilder: { build: builder },
-  } });
-  return { client, calls, setState: (value) => { state = value; }, setDevice: (value) => { currentDevice = value; } };
+  // Deliberately no ConnectAPI, PlaylistAPI, RequestBuilder, or external transport.
+  const client = createClient({ Platform: { PlayerAPI: player } });
+  return { client, calls, player, apply, setState: (s) => { state = s; } };
 }
 
-test("Unicode and long UTF-8 prompts survive the Android protobuf wire format", () => {
-  const prompt = "Café 🎷 ".repeat(20);
-  assert.deepEqual(readFields(encodeRequest(prompt, playing(), device)), {
-    1: prompt.trim(), 2: "session-123", 3: "real-connect-id", 4: "XX-Segment-42", 5: "0", 7: "spotify:track:track-123", 8: 2,
+test("the phone's text prompt signal is base64 protobuf, with text input type 2", () => {
+  // Android 9.1.84 PromptSignalPayload: 0a 05 'metal' 10 02.
+  assert.equal(encodePromptSignal("metal"), "CgVtZXRhbBAC");
+  assert.deepEqual(readFields(encodePromptSignal("new metals that im recently into")), {
+    1: "new metals that im recently into", 2: 2,
   });
 });
 
-test("invalid requests never reach Spotify or start playback", async () => {
+test("Unicode, multibyte lengths, and trimmed input survive the native wire format", () => {
+  const prompt = "Café 🎷 ".repeat(50);
+  assert.deepEqual(readFields(encodePromptSignal(prompt)), { 1: prompt.trim(), 2: 2 });
+  assert.deepEqual(readFields(encodePromptSignal("  metal  ")), { 1: "metal", 2: 2 });
+});
+
+test("invalid prompts cannot issue playback commands", async () => {
   const { client, calls } = fixture();
   await assert.rejects(client.request("   "), { code: "empty_prompt" });
   await assert.rejects(client.request("a".repeat(501)), { code: "long_prompt" });
@@ -80,77 +90,101 @@ test("invalid requests never reach Spotify or start playback", async () => {
   assert.equal(normalizePrompt("  jazz  "), "jazz");
 });
 
-test("a request uses authenticated Spotify transport and the actual Connect ID", async () => {
-  const { client, calls } = fixture();
-  const result = await client.request("  mellow jazz  ");
-  assert.deepEqual(result, { prompt: "mellow jazz", message: "success" });
+test("an active DJ receives the same native prompt command as the phone", async () => {
+  const { client, calls, player } = fixture();
+  const session = player.getState().sessionId;
+  const result = await client.request("  metal  ");
+  assert.deepEqual(calls, [{ signal: "prompt", parameters: "CgVtZXRhbBAC" }]);
+  assert.deepEqual(result, { prompt: "metal", requestId: "idj-request-1" });
+  assert.equal(player.getState().sessionId, session, "a prompt must not restart ordinary DJ");
+});
+
+test("DJ starts atomically with a prompt when music is queued or another context is active", async () => {
+  const { client, calls, setState } = fixture({ ready: false });
+  setState({ context: { uri: "spotify:playlist:other" }, item: { uri: "spotify:track:other" } });
+  await client.request("metal");
   assert.equal(calls.length, 1);
-  assert.equal(calls[0].withHost, "https://spclient.wg.spotify.com");
-  assert.equal(calls[0].withPath, ENDPOINT);
-  assert.equal(calls[0].withMethod, "POST");
-  assert.equal(calls[0].withResponseType, "arraybuffer");
-  assert.equal(readFields(calls[0].withBody)[3], "real-connect-id");
+  assert.deepEqual(calls[0].nativePlay, {
+    context: { uri: DJ_URI, url: `context://${DJ_URI}`, isLoading: true },
+    rawSignal: { identifier: "prompt", clientPayload: new TextEncoder().encode("CgVtZXRhbBAC") },
+    playOrigin: { featureIdentifier: "endless", referrerIdentifier: "extension" },
+  });
 });
 
-test("starting DJ sends the new playback session, not the previous playlist session", async () => {
-  const fixtureData = fixture();
-  fixtureData.setState({ sessionId: "old-session", context: { uri: "spotify:playlist:other" }, item: { uri: "spotify:track:old" } });
-  await fixtureData.client.request("jazz");
-  assert.equal(fixtureData.calls.length, 2);
-  assert.equal(fixtureData.calls[0].play.url, "hm://dj-session");
-  assert.equal(readFields(fixtureData.calls[1].withBody)[2], "new-session");
+test("the public Player API remains usable if Spicetify moves its native play client", async () => {
+  const { client, calls, player } = fixture({ ready: false, nativeStart: false });
+  player._playlistPlayServiceClient = { play: {} }; // A changed SDK surface is not callable.
+  await client.request("metal");
+  assert.equal(calls.length, 2);
+  assert.equal(calls[0].publicPlay[0].uri, DJ_URI);
+  assert.deepEqual(calls[1], { signal: "prompt", parameters: "CgVtZXRhbBAC" });
 });
 
-test("unsupported devices and unavailable account requests cannot be submitted", async () => {
-  const data = fixture();
-  data.setDevice({ ...device, supportsDJNarration: false });
-  await assert.rejects(data.client.request("jazz"), { code: "unsupported_device" });
-  data.setDevice({ id: "local_device" });
-  await assert.rejects(data.client.request("jazz"), { code: "missing_device" });
-  data.setDevice(device);
-  const state = playing();
-  state.context.metadata["dj.interactivity_enabled"] = "false";
-  data.setState(state);
-  await assert.rejects(data.client.request("jazz"), { code: "unavailable" });
-  assert.equal(data.calls.length, 0);
+test("a new interactive request in the native upcoming set counts before narration finishes", async () => {
+  const data = fixture({ onCommand: () => {
+    const state = playing("idj-old");
+    state.item = { uri: "spotify:media:0000000000000000000000", metadata: { is_narration: "true" } };
+    state.nextItems = [{ uri: "spotify:track:requested", metadata: { idj_request_id: "idj-new" } }];
+    data.setState(state);
+  } });
+  data.setState(playing("idj-old"));
+  assert.equal((await data.client.request("metal")).requestId, "idj-new");
 });
 
-test("HTTP 200 with a service rejection is an error, and is never automatically retried", async () => {
-  const { client, calls } = fixture(async () => ({ status: 200, body: { statusCode: "ERROR", statusMessage: "Try a more specific music request." } }));
-  await assert.rejects(client.request("jazz"), { code: "rejected", message: "Try a more specific music request." });
-  assert.equal(calls.length, 1);
-});
-
-test("HTTP permission failures are reported clearly", async () => {
-  const { client } = fixture(async () => { throw { status: 403 }; });
-  await assert.rejects(client.request("jazz"), { code: "unavailable" });
-});
-
-test("a delayed response cannot block a later request or the native DJ command", async () => {
-  let finish;
+test("native command acceptance or a random DJ/session change is not prompt success", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
   let sent;
   const started = new Promise((resolve) => { sent = resolve; });
-  const pending = new Promise((resolve) => { finish = resolve; });
-  const { client, calls, setState } = fixture(async () => { sent(); await pending; return { status: 200, body: OK.buffer }; });
-  const first = client.request("jazz");
+  const data = fixture({ onCommand: () => {
+    data.setState({ ...playing("idj-old"), sessionId: "unrelated-session" });
+    sent();
+  } });
+  data.setState(playing("idj-old"));
+  const rejected = assert.rejects(data.client.request("metal"), { code: "not_applied" });
   await started;
-  setState({ ...playing(), sessionId: "session-after-first-request" });
-  const second = client.request("rock");
-  await client.letDJPick();
-  const requests = calls.filter((call) => call.withMethod === "POST");
-  assert.equal(requests.length, 2);
-  assert.equal(readFields(requests[1].withBody)[2], "session-after-first-request");
-  assert.deepEqual(calls.at(-1), { signal: "jump" });
-  finish();
-  await Promise.all([first, second]);
+  await new Promise(setImmediate);
+  t.mock.timers.tick(30001);
+  await rejected;
+  assert.equal(data.calls.length, 1, "never automatically resend a playback-changing command");
 });
 
-test("only a complete positive service reply counts as acceptance", () => {
-  assert.deepEqual(decodeReply(OK.buffer), { code: "OK", message: "success" });
-  const padded = Uint8Array.from([99, ...OK, 99]);
-  assert.deepEqual(decodeReply(padded.subarray(1, -1)), { code: "OK", message: "success" });
-  assert.throws(() => decodeReply(Uint8Array.from([10, 100, 65])), { code: "invalid_response" });
-  assert.throws(() => decodeReply(Uint8Array.from([128])), { code: "invalid_response" });
-  assert.throws(() => checkReply(decodeReply(new ArrayBuffer(0))), DJError);
-  assert.throws(() => checkReply({ code: "RATE_LIMITED" }), { code: "rate_limited" });
+test("native rejections do not fall back to the obsolete HTTP service", async () => {
+  const { client, player, calls } = fixture({ ready: false });
+  player._playlistPlayServiceClient.play = async () => ({ status: { statusCode: 403 } });
+  await assert.rejects(client.request("metal"), { code: "rejected" });
+  assert.equal(calls.length, 0);
+});
+
+test("pending prompts are serialized so Spotify cannot mix their generated sets", async () => {
+  let release, started;
+  const waiting = new Promise((resolve) => { release = resolve; });
+  const sent = new Promise((resolve) => { started = resolve; });
+  let count = 0;
+  const data = fixture({ onCommand: async ({ apply }) => {
+    if (++count === 1) { started(); await waiting; }
+    apply();
+  } });
+  const first = data.client.request("metal");
+  await sent;
+  const second = data.client.request("jazz");
+  await Promise.resolve();
+  assert.equal(data.calls.length, 1);
+  release();
+  assert.equal((await first).requestId, "idj-request-1");
+  assert.equal((await second).requestId, "idj-request-2");
+  assert.deepEqual(data.calls.map((call) => readFields(call.parameters)[1]), ["metal", "jazz"]);
+});
+
+test("Hand it to DJ cancels pending prompt work and sends the native jump command", async () => {
+  const { client, calls } = fixture();
+  const pending = assert.rejects(client.request("metal"), { code: "cancelled" });
+  await client.letDJPick();
+  await pending;
+  assert.deepEqual(calls, [{ signal: "jump", parameters: undefined }]);
+});
+
+test("native interactive contexts remain recognizable as Spotify DJ", () => {
+  assert.equal(isDJ({ context: { uri: DJ_URI, metadata: { agentic_product_type: "idj" } } }), true);
+  assert.equal(isDJ({ context: { uri: "spotify:lexicon:your-dj" } }), true);
+  assert.equal(isDJ({ context: { uri: "spotify:playlist:other" } }), false);
 });

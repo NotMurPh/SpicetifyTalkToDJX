@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.3.4
+
+- Follow the phone's current text-request flow: a base64-encoded `PromptSignalPayload` sent through Spotify's native `prompt` command.
+- Start DJ atomically with an attached prompt when another context or queued music is active.
+- Remove the legacy HTTP request route and its manually supplied session/device fields, which could restart ordinary DJ without applying the prompt.
+- Preserve Spotify's native DJ X acknowledgement, narration, and interactive recommendations without a helper, separate audio player, or queue manipulation.
+- Verify fresh native `idj_request_id` values before reporting a request as applied; detect accepted commands that never produce an interactive set.
+- Keep the panel immediately dismissible while ordering background interactions, and retain only the top-left shortcut.
+- Add phone-protocol regression tests and live checks for the actual spoken acknowledgement and requested set.
+
 ## 1.3.3
 
 - Recover automatically during installation when a Spotify update invalidates Spicetify's backup; detect warnings that incorrectly look like successful installs.

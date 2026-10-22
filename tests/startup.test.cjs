@@ -21,7 +21,7 @@ function start(topbar) {
   };
   let mutation;
   const window = { Spicetify: {
-    Platform: { PlayerAPI: { getState() {} }, RequestBuilder: { build() {} }, ConnectAPI: { getState() {} }, PlaylistAPI: { getMetadata() {} } },
+    Platform: { PlayerAPI: { getState() {}, canSendSignal() {}, sendSignal() {} } },
     PopupModal: {}, Topbar: topbar,
     // React, ReactJSX, Menu, and Player intentionally unavailable during startup.
   } };
@@ -35,7 +35,7 @@ function start(topbar) {
 for (const [label, api] of [["missing", undefined], ["broken", { Button: class { constructor() { throw new Error("mount point changed"); } } }]]) {
   test(`startup works with ${label} Topbar API and delayed React, and remounts just the top-left button`, () => {
     const app = start(api);
-    assert.equal(app.window.TalkToDJX.version, "1.3.3");
+    assert.equal(app.window.TalkToDJX.version, "1.3.4");
     assert.equal(app.window.TalkToDJ, app.window.TalkToDJX);
     const buttons = app.created.filter((node) => node.tag === "button");
     assert.equal(buttons.length, 1);

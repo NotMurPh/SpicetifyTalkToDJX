@@ -4,7 +4,7 @@ Send a text prompt to **the real Spotify DJ X** from Spotify desktop. Describe t
 
 ![TalkToDJX request panel preview](preview.svg)
 
-**Spicetify extension · Version 1.3.3 · GitHub repository: SpicetifyTalkToDJX**
+**Spicetify extension · Version 1.3.4 · GitHub repository: SpicetifyTalkToDJX**
 
 ## Install from Spicetify Marketplace
 
@@ -51,7 +51,7 @@ No API key, separate account login, AI subscription, or background server is nee
 
 ### Standalone file — no Node.js required
 
-1. Download [`talk-to-dj.js` from the v1.3.3 release](https://github.com/NotMurPh/SpicetifyTalkToDJX/releases/download/v1.3.3/talk-to-dj.js).
+1. Download [`talk-to-dj.js` from the v1.3.4 release](https://github.com/NotMurPh/SpicetifyTalkToDJX/releases/download/v1.3.4/talk-to-dj.js).
 2. Run `spicetify -c` in a terminal to locate your Spicetify configuration file.
 3. Open the folder containing that configuration file, then its `Extensions` folder. Create `Extensions` if it does not exist.
 4. Place the downloaded file there, keeping its name **`talk-to-dj.js`**.
@@ -129,17 +129,22 @@ If a future Spotify build is incompatible with Spicetify itself, update Spicetif
 
 ## How it works
 
-The extension uses Spotify's authenticated `Platform.RequestBuilder` to call:
+The extension follows Spotify Android's native text-request flow. It encodes `PromptSignalPayload` as protobuf, then base64:
 
-```text
-POST /dj-interaction-manager/spotify.dj.interactionmanager.v0.DJInteractionManagerService/ResolveInteractiveContext
+```protobuf
+string user_prompt = 1;
+PromptInputType input_type = 2; // PROMPT_INPUT_TYPE_TEXT = 2
 ```
 
-The protobuf request uses the Android app's field numbers: prompt (1), current playback session ID (2), active Connect device ID (3), segment ID (4), retries left (5), submission reason (6), track URI (7), and input type (8). Text input is enum value `2`; the default submission reason is request prompt (`0`). Spotify updates the active device's DJ session itself.
+When DJ is active and accepts requests, the extension sends `PlayerAPI.sendSignal("prompt", parameters)`. When DJ needs to start, it passes the same payload as a native Playlist Play `rawSignal`, so Spotify starts DJ with the prompt already attached. A public Player API fallback handles older Spicetify builds that do not expose the native play client.
 
-The panel closes on submission without showing loading, success, or error messages. HTTP and protobuf replies are handled in the background for diagnostics. A delayed reply does not lock the panel or prevent another request; submitting uses the current DJ session. The extension does not automatically retry a request that may already be changing playback.
+Spotify handles the acknowledgement, DJ narration, recommendations, and playback inside its own interactive DJ session. The extension does not fetch or synthesize speech, edit the playback queue, or use a local helper.
 
-This is an internal Spotify API, so Spotify updates can change it. `TalkToDJX.getStatus()` in developer tools reports outstanding background requests and the latest error code without displaying them in the panel. `TalkToDJ` remains available as a compatibility alias for existing development tools.
+The panel closes immediately on submission and stays available while Spotify works. Background requests are sent in order, matching the phone's one-interaction-at-a-time behavior. A request is considered applied only after a **fresh `idj_request_id`** appears in Spotify's native current or upcoming DJ tracks. A changed song, changed playback session, or accepted command alone is insufficient. Failed commands produce a normal Spotify notification; the panel has no loading or status display. Playback-changing commands are never retried automatically.
+
+Versions before 1.3.4 used a legacy HTTP route that could return `OK / no response` and restart ordinary DJ with unrelated music. Version 1.3.4 removes that route and its manual session/device request fields.
+
+Spotify's internal APIs can change. `TalkToDJX.getStatus()` in developer tools reports outstanding background requests, the latest error code, and the last verified native request ID. `TalkToDJ` remains available as a compatibility alias for existing development tools.
 
 ## Verification
 
@@ -152,9 +157,15 @@ node --test tests/talk-to-dj.test.cjs tests/compat.test.mjs tests/repair.test.mj
 
 Live development tools in `tools/` can inspect a local Spotify instance started with `--remote-debugging-port=9222`. They are not required for normal use. `tools/cdp.mjs` evaluates JavaScript in that local instance; do not pass authentication tokens to its output.
 
-The automated checks cover request encoding, delayed replies, recovery from Spotify/backup version mismatches, and startup without React or a working Topbar API. GitHub Actions runs them on Windows and Linux with Node.js 22 and 24. Live checks in `tools/check-live.mjs` verify the top-left-only shortcut and the request panel against a running Spotify instance.
+The automated checks cover the phone's native prompt wire format, Unicode, atomic DJ startup, ordered background commands, fresh interactive-request verification, update recovery, and startup without React or a working Topbar API. GitHub Actions runs them on Windows and Linux with Node.js 22 and 24.
 
-Version 1.3.3 was tested locally with Spotify **1.3.6.1921** and Spicetify **2.46.2**: a real DJ request completed successfully and changed the active DJ set. The scheduled repair task also completed successfully on a healthy installation.
+Live verification checks the top-left-only shortcut, the request panel, Spotify's native spoken acknowledgement, and the actual requested set's native introduction and request ID:
+
+```powershell
+node tools/check-live.mjs --prompt "new metals that im recently into"
+```
+
+Version 1.3.4 was tested locally with Spotify **1.3.6.1921** and Spicetify **2.46.2**, using the text-request flow traced from Spotify Android **9.1.84.2205**. For the prompt above, Spotify acknowledged “New metal bands you're into lately. Let me spin some of that,” introduced a matching metal set, and played **Virgin Black — Our Wings Are Burning**. Native DJ startup with an attached prompt was also verified with **Accept — Samson and Delilah**. These checks verify matching native narration and interactive playback, rather than HTTP success alone.
 
 ## Marketplace publishing
 
